@@ -51,36 +51,14 @@ def compile_code():
 
     return {"errors": errors}
 
-
 @app.route("/submit", methods=["POST"])
 def submit():
     data = request.json
     code = data["code"]
     team = data["team"]
 
-    uid = str(uuid.uuid4())
-    folder = f"/tmp/{uid}"
-    os.makedirs(folder, exist_ok=True)
-
-    file_path = os.path.join(folder, "RobotProgram.java")
-
-    with open(file_path, "w") as f:
-        f.write(code)
-
-    result = subprocess.run(
-        ["javac", file_path],
-        capture_output=True,
-        text=True
-    )
-
-    if result.returncode != 0:
-        return {
-            "status": "error",
-            "message": "Compilation failed",
-            "errors": result.stderr
-        }, 400
-
     submissions[team] = code
+
     return {"status": "ok"}
 
 
