@@ -1,3 +1,5 @@
+import re
+
 from flask import Flask, request, jsonify, render_template_string
 
 app = Flask(__name__)
@@ -6,6 +8,37 @@ app = Flask(__name__)
 submissions = {}
 
 MAX_CODE_LENGTH = 100_000
+
+# Program limits (must match the editor's limits below)
+MAX_BLOCKS = 20
+MIN_SECONDS = 0
+MAX_SECONDS = 10
+
+COMMAND_PATTERN = re.compile(
+    r"^(driveForwardInSeconds|driveBackwardsInSeconds|"
+    r"turnLeftInSeconds|turnRightInSeconds)\((\d+(?:\.\d+)?)\);$"
+)
+
+
+def validate_program(code):
+    """Return an error message if the program breaks the limits, else None."""
+    lines = [line.strip() for line in code.splitlines() if line.strip()]
+
+    if len(lines) > MAX_BLOCKS:
+        return f"Too many blocks (maximum is {MAX_BLOCKS})"
+
+    for line in lines:
+        match = COMMAND_PATTERN.match(line)
+
+        if not match:
+            return "Invalid code"
+
+        seconds = float(match.group(2))
+
+        if not MIN_SECONDS <= seconds <= MAX_SECONDS:
+            return f"Seconds must be between {MIN_SECONDS} and {MAX_SECONDS}"
+
+    return None
 
 
 # -------------------------
@@ -27,6 +60,11 @@ def submit():
 
     if len(code) > MAX_CODE_LENGTH:
         return jsonify({"error": "Code is too long"}), 400
+
+    error = validate_program(code)
+
+    if error:
+        return jsonify({"error": error}), 400
 
     submissions[team] = code
 
@@ -201,15 +239,6 @@ EDITOR_HTML = """
             flex-shrink: 0;
         }
 
-        html[dir="rtl"] .children {
-            margin-left: 0;
-            margin-right: 30px;
-            padding-left: 0;
-            padding-right: 12px;
-            border-left: none;
-            border-right: 3px solid #9333ea;
-        }
-
         #editor {
             display: flex;
             align-items: flex-start;
@@ -262,10 +291,6 @@ EDITOR_HTML = """
 
         .turn {
             background: #16a34a;
-        }
-
-        .repeat {
-            background: #9333ea;
         }
 
         /* -------------------------
@@ -353,17 +378,6 @@ EDITOR_HTML = """
 
         .program-block button:hover {
             background: #0005;
-        }
-
-        /* -------------------------
-           NESTED BLOCKS
-        ------------------------- */
-
-        .children {
-            margin-left: 30px;
-            padding-left: 12px;
-            border-left: 3px solid #9333ea;
-            min-height: 15px;
         }
 
         /* -------------------------
@@ -456,12 +470,6 @@ EDITOR_HTML = """
                 <span data-i18n="turn">Turn</span>
             </div>
 
-            <div class="palette-block repeat"
-                 draggable="true"
-                 data-type="repeat"
-                 onclick="addBlock('repeat')">
-                <span data-i18n="repeat">Repeat</span>
-            </div>
         </div>
 
         <!-- PROGRAM WORKSPACE -->
@@ -493,7 +501,6 @@ EDITOR_HTML = """
                 availableBlocks: "Available Blocks",
                 drive: "Drive",
                 turn: "Turn",
-                repeat: "Repeat",
                 startBlock: "When program starts",
                 submitCode: "Submit Code",
                 forward: "Forward",
@@ -502,18 +509,17 @@ EDITOR_HTML = """
                 right: "Right",
                 for: "for",
                 seconds: "seconds",
-                times: "times",
                 removeBlock: "Remove block",
                 submitting: "Submitting...",
                 submitted: "Code submitted successfully!",
-                submissionFailed: "Submission failed"
+                submissionFailed: "Submission failed",
+                maxBlocksReached: "Maximum of 20 blocks reached"
             },
             he: {
                 editorTitle: "פרויקט אתנה - " + TEAM,
                 availableBlocks: "בלוקים זמינים",
                 drive: "נסיעה",
                 turn: "סיבוב",
-                repeat: "חזור",
                 startBlock: "כאשר התוכנית מתחילה",
                 submitCode: "שלח קוד",
                 forward: "קדימה",
@@ -522,11 +528,11 @@ EDITOR_HTML = """
                 right: "ימינה",
                 for: "במשך",
                 seconds: "שניות",
-                times: "פעמים",
                 removeBlock: "הסר בלוק",
                 submitting: "שולח...",
                 submitted: "הקוד נשלח בהצלחה!",
-                submissionFailed: "שליחת הקוד נכשלה"
+                submissionFailed: "שליחת הקוד נכשלה",
+                maxBlocksReached: "הגעת למקסימום של 20 בלוקים"
             }
         };
 
@@ -559,6 +565,10 @@ EDITOR_HTML = """
             applyLanguage();
         }
 
+        const MAX_BLOCKS = 20;
+        const MIN_SECONDS = 0;
+        const MAX_SECONDS = 10;
+
         let blocks = [];
         let nextId = 0;
         let dragged = null;
@@ -573,11 +583,9 @@ EDITOR_HTML = """
                 id: nextId++,
                 type: type,
                 seconds: 2,
-                count: 3,
                 direction: type === "drive"
                     ? "FORWARD"
-                    : "LEFT",
-                children: []
+                    : "LEFT"
             };
 
             return block;
@@ -589,97 +597,81 @@ EDITOR_HTML = """
         // -------------------------
 
         function addBlock(type) {
+            if (blocks.length >= MAX_BLOCKS) {
+                showLimitMessage();
+                return;
+            }
+
             blocks.push(createBlock(type));
             renderBlocks();
         }
 
 
         // -------------------------
-        // TREE HELPERS
+        // LIMITS
         // -------------------------
 
-        function findList(ownerId, list = blocks) {
-            if (ownerId === null) {
-                return list;
-            }
+        function showLimitMessage() {
+            const status = document.getElementById("status");
 
-            for (const block of list) {
-                if (block.id === ownerId) {
-                    return block.children;
-                }
-
-                const result = findList(ownerId, block.children);
-
-                if (result !== null) {
-                    return result;
-                }
-            }
-
-            return null;
+            status.dataset.kind = "limit";
+            status.textContent = t("maxBlocksReached");
+            status.style.color = "red";
         }
 
 
-        function findBlock(id, list = blocks) {
-            for (const block of list) {
-                if (block.id === id) {
-                    return block;
-                }
+        function updateLimitMessage() {
+            const status = document.getElementById("status");
 
-                const result = findBlock(id, block.children);
-
-                if (result) {
-                    return result;
-                }
+            if (status.dataset.kind !== "limit") {
+                return;
             }
 
-            return null;
+            if (blocks.length >= MAX_BLOCKS) {
+                status.textContent = t("maxBlocksReached");
+            } else {
+                status.dataset.kind = "";
+                status.textContent = "";
+            }
         }
 
 
-        function containsBlock(block, id) {
-            if (block.id === id) {
-                return true;
+        function clampSeconds(value) {
+            const number = Number(value);
+
+            if (!Number.isFinite(number)) {
+                return MIN_SECONDS;
             }
 
-            return block.children.some(child =>
-                containsBlock(child, id)
-            );
+            const rounded = Math.round(number * 100) / 100;
+
+            return Math.min(MAX_SECONDS, Math.max(MIN_SECONDS, rounded));
         }
 
 
-        function removeBlockFromList(id, list = blocks) {
-            const index = list.findIndex(block => block.id === id);
+        // -------------------------
+        // LIST HELPERS
+        // -------------------------
 
-            if (index !== -1) {
-                return list.splice(index, 1)[0];
-            }
+        function removeBlock(id) {
+            const index = blocks.findIndex(block => block.id === id);
 
-            for (const block of list) {
-                const result = removeBlockFromList(id, block.children);
-
-                if (result) {
-                    return result;
-                }
-            }
-
-            return null;
-        }
-
-
-        function getNextBlockId(ownerId, blockId) {
-            const list = findList(ownerId);
-
-            if (!list) {
+            if (index === -1) {
                 return null;
             }
 
-            const index = list.findIndex(block => block.id === blockId);
+            return blocks.splice(index, 1)[0];
+        }
 
-            if (index === -1 || index + 1 >= list.length) {
+
+        function getNextBlockId(blockId) {
+            const index = blocks.findIndex(block => block.id === blockId);
+
+            if (index === -1 || index + 1 >= blocks.length) {
                 return null;
             }
 
-            return list[index + 1].id;
+            return blocks[index + 1].id;
         }
 
 
@@ -694,27 +686,26 @@ EDITOR_HTML = """
         }
 
 
-        function handleDrop(ownerId, beforeId) {
+        function handleDrop(beforeId) {
             if (!dragged) {
-                return;
-            }
-
-            const targetList = findList(ownerId);
-
-            if (!targetList) {
                 return;
             }
 
             // Create a new block from the palette.
             if (dragged.type === "new") {
+                if (blocks.length >= MAX_BLOCKS) {
+                    showLimitMessage();
+                    return;
+                }
+
                 const newBlock = createBlock(dragged.blockType);
 
                 const index = beforeId === null
-                    ? targetList.length
-                    : targetList.findIndex(block => block.id === beforeId);
+                    ? blocks.length
+                    : blocks.findIndex(block => block.id === beforeId);
 
-                targetList.splice(
-                    index === -1 ? targetList.length : index,
+                blocks.splice(
+                    index === -1 ? blocks.length : index,
                     0,
                     newBlock
                 );
@@ -725,34 +716,23 @@ EDITOR_HTML = """
 
             // Move an existing block.
             if (dragged.type === "existing") {
-                const movingBlock = findBlock(dragged.id);
-
-                if (!movingBlock) {
-                    return;
-                }
-
-                // Do not move a block into itself or one of its children.
-                if (ownerId !== null && containsBlock(movingBlock, ownerId)) {
-                    return;
-                }
-
                 // Do not drop a block directly before itself.
                 if (beforeId === dragged.id) {
                     return;
                 }
 
-                const removed = removeBlockFromList(dragged.id);
+                const removed = removeBlock(dragged.id);
 
                 if (!removed) {
                     return;
                 }
 
                 const index = beforeId === null
-                    ? targetList.length
-                    : targetList.findIndex(block => block.id === beforeId);
+                    ? blocks.length
+                    : blocks.findIndex(block => block.id === beforeId);
 
-                targetList.splice(
-                    index === -1 ? targetList.length : index,
+                blocks.splice(
+                    index === -1 ? blocks.length : index,
                     0,
                     removed
                 );
@@ -762,7 +742,7 @@ EDITOR_HTML = """
         }
 
 
-        function createDropZone(ownerId, beforeId) {
+        function createDropZone(beforeId) {
             const zone = document.createElement("div");
 
             zone.className = "drop-zone";
@@ -809,7 +789,7 @@ EDITOR_HTML = """
                 }
 
                 clearDropHighlights();
-                handleDrop(ownerId, beforeId);
+                handleDrop(beforeId);
             });
 
             return zone;
@@ -820,7 +800,49 @@ EDITOR_HTML = """
         // CREATE PROGRAM BLOCK
         // -------------------------
 
-        function createBlockElement(block, lineCounter, ownerId) {
+        function createSecondsInput(block) {
+            const seconds = document.createElement("input");
+
+            seconds.type = "number";
+            seconds.min = String(MIN_SECONDS);
+            seconds.max = String(MAX_SECONDS);
+            seconds.step = "0.1";
+            seconds.value = block.seconds;
+
+            seconds.addEventListener("input", () => {
+                block.seconds = clampSeconds(seconds.value);
+            });
+
+            // Snap the field back into range once the user is done typing.
+            seconds.addEventListener("change", () => {
+                block.seconds = clampSeconds(seconds.value);
+                seconds.value = block.seconds;
+            });
+
+            return seconds;
+        }
+
+
+        function createDirectionSelect(block, options) {
+            const direction = document.createElement("select");
+
+            direction.innerHTML = options
+                .map(option =>
+                    `<option value="${option.value}">${t(option.label)}</option>`
+                )
+                .join("");
+
+            direction.value = block.direction;
+
+            direction.addEventListener("change", () => {
+                block.direction = direction.value;
+            });
+
+            return direction;
+        }
+
+
+        function createBlockElement(block, number) {
             const wrapper = document.createElement("div");
             wrapper.className = "program-item";
 
@@ -832,134 +854,39 @@ EDITOR_HTML = """
             // Line number
             const lineNumber = document.createElement("span");
             lineNumber.className = "line-number";
-            lineNumber.textContent = lineCounter.value++;
+            lineNumber.textContent = number;
 
             element.appendChild(lineNumber);
 
-            // -------------------------
-            // DRIVE BLOCK
-            // -------------------------
+            // Block label, direction, and duration
+            element.appendChild(
+                document.createTextNode(t(block.type))
+            );
 
-            if (block.type === "drive") {
-                element.appendChild(
-                    document.createTextNode(t("drive"))
-                );
+            element.appendChild(
+                createDirectionSelect(
+                    block,
+                    block.type === "drive"
+                        ? [
+                            { value: "FORWARD", label: "forward" },
+                            { value: "BACKWARD", label: "backward" }
+                        ]
+                        : [
+                            { value: "LEFT", label: "left" },
+                            { value: "RIGHT", label: "right" }
+                        ]
+                )
+            );
 
-                const direction = document.createElement("select");
+            element.appendChild(
+                document.createTextNode(t("for"))
+            );
 
-                direction.innerHTML = `
-                    <option value="FORWARD">${t("forward")}</option>
-                    <option value="BACKWARD">${t("backward")}</option>
-                `;
+            element.appendChild(createSecondsInput(block));
 
-                direction.value = block.direction;
-
-                direction.addEventListener("change", () => {
-                    block.direction = direction.value;
-                });
-
-                element.appendChild(direction);
-
-                element.appendChild(
-                    document.createTextNode(t("for"))
-                );
-
-                const seconds = document.createElement("input");
-
-                seconds.type = "number";
-                seconds.min = "0";
-                seconds.step = "0.1";
-                seconds.value = block.seconds;
-
-                seconds.addEventListener("input", () => {
-                    block.seconds = Math.max(0, Number(seconds.value) || 0);
-                });
-
-                element.appendChild(seconds);
-
-                element.appendChild(
-                    document.createTextNode(t("seconds"))
-                );
-            }
-
-
-            // -------------------------
-            // TURN BLOCK
-            // -------------------------
-
-            else if (block.type === "turn") {
-                element.appendChild(
-                    document.createTextNode(t("turn"))
-                );
-
-                const direction = document.createElement("select");
-
-                direction.innerHTML = `
-                    <option value="LEFT">${t("left")}</option>
-                    <option value="RIGHT">${t("right")}</option>
-                `;
-
-                direction.value = block.direction;
-
-                direction.addEventListener("change", () => {
-                    block.direction = direction.value;
-                });
-
-                element.appendChild(direction);
-
-                element.appendChild(
-                    document.createTextNode(t("for"))
-                );
-
-                const seconds = document.createElement("input");
-
-                seconds.type = "number";
-                seconds.min = "0";
-                seconds.step = "0.1";
-                seconds.value = block.seconds;
-
-                seconds.addEventListener("input", () => {
-                    block.seconds = Math.max(0, Number(seconds.value) || 0);
-                });
-
-                element.appendChild(seconds);
-
-                element.appendChild(
-                    document.createTextNode(t("seconds"))
-                );
-            }
-
-
-            // -------------------------
-            // REPEAT BLOCK
-            // -------------------------
-
-            else if (block.type === "repeat") {
-                element.appendChild(
-                    document.createTextNode(t("repeat"))
-                );
-
-                const count = document.createElement("input");
-
-                count.type = "number";
-                count.min = "0";
-                count.step = "1";
-                count.value = block.count;
-
-                count.addEventListener("input", () => {
-                    block.count = Math.max(
-                        0,
-                        Math.floor(Number(count.value) || 0)
-                    );
-                });
-
-                element.appendChild(count);
-
-                element.appendChild(
-                    document.createTextNode(t("times"))
-                );
-            }
-
+            element.appendChild(
+                document.createTextNode(t("seconds"))
+            );
 
             // -------------------------
             // REMOVE BUTTON
@@ -973,7 +900,7 @@ EDITOR_HTML = """
             removeButton.addEventListener("click", event => {
                 event.stopPropagation();
 
-                removeBlockFromList(block.id);
+                removeBlock(block.id);
                 renderBlocks();
             });
 
@@ -1022,7 +949,7 @@ EDITOR_HTML = """
 
                 const beforeId = isUpperHalf
                     ? block.id
-                    : getNextBlockId(ownerId, block.id);
+                    : getNextBlockId(block.id);
 
                 // Never highlight the position directly before itself.
                 if (
@@ -1066,7 +993,7 @@ EDITOR_HTML = """
 
                 const beforeId = isUpperHalf
                     ? block.id
-                    : getNextBlockId(ownerId, block.id);
+                    : getNextBlockId(block.id);
 
                 clearDropHighlights();
 
@@ -1077,58 +1004,13 @@ EDITOR_HTML = """
                     return;
                 }
 
-                handleDrop(ownerId, beforeId);
+                handleDrop(beforeId);
             });
 
 
             wrapper.appendChild(element);
 
-
-            // -------------------------
-            // NESTED CHILDREN
-            // -------------------------
-
-            if (block.type === "repeat") {
-                const childList = document.createElement("div");
-                childList.className = "children";
-
-                renderList(
-                    block.children,
-                    childList,
-                    block.id,
-                    lineCounter
-                );
-
-                wrapper.appendChild(childList);
-            }
-
             return wrapper;
-        }
-
-
-        // -------------------------
-        // RENDER LIST
-        // -------------------------
-
-        function renderList(list, container, ownerId, lineCounter) {
-            container.innerHTML = "";
-
-            list.forEach(block => {
-                // Drop zone before this block.
-                container.appendChild(
-                    createDropZone(ownerId, block.id)
-                );
-
-                // Block itself.
-                container.appendChild(
-                    createBlockElement(block, lineCounter, ownerId)
-                );
-            });
-
-            // Drop zone at the end of this list.
-            container.appendChild(
-                createDropZone(ownerId, null)
-            );
         }
 
 
@@ -1139,16 +1021,20 @@ EDITOR_HTML = """
         function renderBlocks() {
             const program = document.getElementById("program");
 
-            const lineCounter = {
-                value: 1
-            };
+            program.innerHTML = "";
 
-            renderList(
-                blocks,
-                program,
-                null,
-                lineCounter
-            );
+            blocks.forEach((block, index) => {
+                // Drop zone before this block.
+                program.appendChild(createDropZone(block.id));
+
+                // Block itself.
+                program.appendChild(createBlockElement(block, index + 1));
+            });
+
+            // Drop zone at the end of the list.
+            program.appendChild(createDropZone(null));
+
+            updateLimitMessage();
         }
 
 
@@ -1184,45 +1070,27 @@ EDITOR_HTML = """
         function generateJava() {
             const lines = [];
 
-            function emit(list, indent) {
-                const pad = "    ".repeat(indent);
+            for (const block of blocks) {
+                let method;
 
-                for (const block of list) {
-
-                    if (block.type === "drive") {
-                        const method = block.direction === "FORWARD"
-                            ? "driveForwardInSeconds"
-                            : "driveBackwardInSeconds";
-
-                        lines.push(
-                            pad + method + "(" + block.seconds + ");"
-                        );
-                    }
-
-                    else if (block.type === "turn") {
-                        const method = block.direction === "LEFT"
-                            ? "turnLeftInSeconds"
-                            : "turnRightInSeconds";
-
-                        lines.push(
-                            pad + method + "(" + block.seconds + ");"
-                        );
-                    }
-
-                    else if (block.type === "repeat") {
-                        lines.push(
-                            pad + "for (int i = 0; i < " +
-                            block.count + "; i++) {"
-                        );
-
-                        emit(block.children, indent + 1);
-
-                        lines.push(pad + "}");
-                    }
+                if (block.type === "drive") {
+                    method = block.direction === "FORWARD"
+                        ? "driveForwardInSeconds"
+                        : "driveBackwardsInSeconds";
                 }
-            }
 
-            emit(blocks, 0);
+                else if (block.type === "turn") {
+                    method = block.direction === "LEFT"
+                        ? "turnLeftInSeconds"
+                        : "turnRightInSeconds";
+                }
+
+                else {
+                    continue;
+                }
+
+                lines.push(method + "(" + block.seconds + ");");
+            }
 
             return lines.join("\\n");
         }
@@ -1236,6 +1104,7 @@ EDITOR_HTML = """
             const status = document.getElementById("status");
             const code = generateJava();
 
+            status.dataset.kind = "";
             status.textContent = t("submitting");
 
             try {
